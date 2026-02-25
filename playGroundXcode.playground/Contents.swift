@@ -218,7 +218,7 @@ do{
 }
  */
 
-
+/*
 class Detector {
     
     struct Detection {
@@ -278,7 +278,7 @@ class Detector {
                 let finalResults = self.mapToOriginal(detections: modelDetections)
                 let postProcessTime = (CFAbsoluteTimeGetCurrent() - postProcessStart) * 1000
                 
-                print("\n--- Timing Benchmarks ---")
+                //print("\n--- Timing Benchmarks ---")
                 print("Preprocessing:  \(String(format: "%.2f", preProcessTime)) ms")
                 print("Inference:      \(String(format: "%.2f", inferenceTime)) ms")
                 print("Post-processing: \(String(format: "%.2f", postProcessTime)) ms")
@@ -424,6 +424,10 @@ class Detector {
                 allDetections.append(Detection(box: CGRect(x: x, y: y, width: w, height: h), confidence: highestScore, classIndex: bestClassIndex, className: classes[bestClassIndex]))
             }
         }
+        if allDetections.count > 55 {
+            allDetections = Array(allDetections.sorted { $0.confidence > $1.confidence }.prefix(300))
+        }
+        
         return nMS(detections: allDetections)
     }
     
@@ -462,7 +466,7 @@ do {
     let detector = try Detector(modelPath: modelURL, targetW: 640, targetH: 480)
     
     // 3. Run full inference in one line
-    if let resultImage = detector.inference(imagePath: "1.png", confidenceThreshold: 0.75, show: false) {
+    if let resultImage = detector.inference(imagePath: "1.png", confidenceThreshold: 0.75, show: true) {
         // Display in Playground
         resultImage
     }
@@ -506,196 +510,272 @@ do {
 }
 
 
+ */
 
-/*
  print("DetecotVision")
  
  class DetectorVision {
+     struct Detection {
+         let box: CGRect
+         let confidence: Float
+         let classIndex: Int
+         let className: String
+     }
+     private var model: VNCoreMLModel
+     private var targetW: CGFloat
+     private var targetH: CGFloat
  
- struct Detection {
- let box: CGRect
- let confidence: Float
- let classIndex: Int
- let className: String
- }
+     // Vision handles scaling automatically, but we store these to map boxes back
+     private var currentImageSize: CGSize = .zero
  
- private var model: VNCoreMLModel
- private var targetW: CGFloat
- private var targetH: CGFloat
+     init(modelPath: URL, targetW: CGFloat, targetH: CGFloat) throws {
+         let config = MLModelConfiguration()
+         config.computeUnits = .all
+         let coreMLModel = try MLModel(contentsOf: modelPath, configuration: config)
  
- // Vision handles scaling automatically, but we store these to map boxes back
- private var currentImageSize: CGSize = .zero
+         // Wrap the CoreML model in a Vision model
+         self.model = try VNCoreMLModel(for: coreMLModel)
  
- init(modelPath: URL, targetW: CGFloat, targetH: CGFloat) throws {
- let config = MLModelConfiguration()
- config.computeUnits = .all
- let coreMLModel = try MLModel(contentsOf: modelPath, configuration: config)
+         self.targetW = targetW
+         self.targetH = targetH
+     }
  
- // Wrap the CoreML model in a Vision model
- self.model = try VNCoreMLModel(for: coreMLModel)
+     func inference(url: URL, confidenceThreshold: Float = 0.5, show: Bool = true) -> UIImage? {
+         // Vision prefers URLs or CGImages
+         let startTime = CFAbsoluteTimeGetCurrent()
+         var detections = [Detection]()
  
- self.targetW = targetW
- self.targetH = targetH
- }
+         let startPrep = CFAbsoluteTimeGetCurrent()
+         // 1. Get image size for coordinate mapping (Minimal overhead)
+         guard let sourceImage = UIImage(contentsOfFile: url.path),
+               let cgImage = sourceImage.cgImage else { return nil }
+         self.currentImageSize = sourceImage.size
  
- func inference(url: URL, confidenceThreshold: Float = 0.5, show: Bool = true) -> UIImage? {
- // Vision prefers URLs or CGImages
- let startTime = CFAbsoluteTimeGetCurrent()
- var detections = [Detection]()
+         let prepTime = (CFAbsoluteTimeGetCurrent() - startPrep) * 1000
  
- let startPrep = CFAbsoluteTimeGetCurrent()
- // 1. Get image size for coordinate mapping (Minimal overhead)
- guard let sourceImage = UIImage(contentsOfFile: url.path),
- let cgImage = sourceImage.cgImage else { return nil }
- self.currentImageSize = sourceImage.size
+         // 2. Setup the Request
+         var inferenceTime: Double = 0
+         let request = VNCoreMLRequest(model: self.model) { request, error in
+             let startInf = CFAbsoluteTimeGetCurrent()
+             guard let results = request.results as? [VNCoreMLFeatureValueObservation],
+                   let multiArray = results.first?.featureValue.multiArrayValue else { return }
+             inferenceTime = (CFAbsoluteTimeGetCurrent() - startInf) * 1000
+             // Post-process using the unsafe pointer logic provided earlier
+             detections = self.postProcess(multiArray: multiArray, confidenceThreshold: confidenceThreshold)
  
- let prepTime = (CFAbsoluteTimeGetCurrent() - startPrep) * 1000
+         }
  
- // 2. Setup the Request
- var inferenceTime: Double = 0
- let request = VNCoreMLRequest(model: self.model) { request, error in
- let startInf = CFAbsoluteTimeGetCurrent()
- guard let results = request.results as? [VNCoreMLFeatureValueObservation],
- let multiArray = results.first?.featureValue.multiArrayValue else { return }
- inferenceTime = (CFAbsoluteTimeGetCurrent() - startInf) * 1000
- // Post-process using the unsafe pointer logic provided earlier
- detections = self.postProcess(multiArray: multiArray, confidenceThreshold: confidenceThreshold)
+         // Crucial: This replaces your 'applyLetterbox' logic on the GPU
+         request.imageCropAndScaleOption = .scaleFit
  
- }
+         // 3. Perform the Request
+         let handler = VNImageRequestHandler(url: url, options: [:])
+         do {
+             try handler.perform([request])
+             } catch {
+                 print("Vision Error: \(error)")
+                 return nil
+             }
  
- // Crucial: This replaces your 'applyLetterbox' logic on the GPU
- request.imageCropAndScaleOption = .scaleFit
+         let totalTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
  
- // 3. Perform the Request
- let handler = VNImageRequestHandler(url: url, options: [:])
- do {
- try handler.perform([request])
- } catch {
- print("Vision Error: \(error)")
- return nil
- }
+         print("Image Prep: \(String(format: "%.2f", prepTime)) ms")
+         print("Inf + Post: \(String(format: "%.2f", inferenceTime)) ms")
+         print("Pipeline Total: \(String(format: "%.2f", totalTime)) ms")
+         print()
  
- let totalTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+         if show {
+             return self.drawDetections(on: sourceImage, detections: detections)
+         }
+         return nil
+     }
  
- print("Image Prep: \(String(format: "%.2f", prepTime)) ms")
- print("Inf + Post: \(String(format: "%.2f", inferenceTime)) ms")
- print("Pipeline Total: \(String(format: "%.2f", totalTime)) ms")
- print()
+     // Optimized Post-process using direct pointer access (Unsafe)
+     func postProcess(multiArray: MLMultiArray, confidenceThreshold: Float = 0.5) -> [Detection] {
+         
+         let numAttributes = multiArray.shape[1].intValue // 85 (4 box + 81 classes)
+         let numAnchors = multiArray.shape[2].intValue    // 8400
+         let numClasses = numAttributes - 4
+         let classes = ["w", "s", "n", "sn", "ss"]
  
- if show {
- return self.drawDetections(on: sourceImage, detections: detections)
- }
- return nil
- }
+         var allDetections = [Detection]()
  
- // Optimized Post-process using direct pointer access (Unsafe)
- func postProcess(multiArray: MLMultiArray, confidenceThreshold: Float = 0.5) -> [Detection] {
- let numAttributes = multiArray.shape[1].intValue // 85 (4 box + 81 classes)
- let numAnchors = multiArray.shape[2].intValue    // 8400
- let numClasses = numAttributes - 4
- let classes = ["w", "s", "n", "sn", "ss"]
+         // Direct pointer access bypasses Swift bounds checking
+         let ptr = multiArray.dataPointer.assumingMemoryBound(to: Float.self)
+         
+         let scale = min(targetW / currentImageSize.width,
+                         targetH / currentImageSize.height)
+
+         let scaledWidth = currentImageSize.width * scale
+         let scaledHeight = currentImageSize.height * scale
+
+         let padX = (targetW - scaledWidth) / 2
+         let padY = (targetH - scaledHeight) / 2
  
- var allDetections = [Detection]()
+         for i in 0..<numAnchors {
+             var highestScore: Float = 0
+             var bestClassIndex = -1
  
- // Direct pointer access bypasses Swift bounds checking
- let ptr = multiArray.dataPointer.assumingMemoryBound(to: Float.self)
+             for classIdx in 0..<numClasses {
+                 let score = ptr[(4 + classIdx) * numAnchors + i]
+                 if score > highestScore {
+                     highestScore = score
+                     bestClassIndex = classIdx
+                 }
+             }
  
- for i in 0..<numAnchors {
- var highestScore: Float = 0
- var bestClassIndex = -1
+             if highestScore > confidenceThreshold {
+                 let centerX = CGFloat(ptr[0 * numAnchors + i])
+                 let centerY = CGFloat(ptr[1 * numAnchors + i])
+                 let w = CGFloat(ptr[2 * numAnchors + i])
+                 let h = CGFloat(ptr[3 * numAnchors + i])
  
- for classIdx in 0..<numClasses {
- let score = ptr[(4 + classIdx) * numAnchors + i]
- if score > highestScore {
- highestScore = score
- bestClassIndex = classIdx
- }
- }
+                 // Convert Normalized Model Coordinates to Pixel Coordinates
+                 // Vision outputs are relative to the input image size
+                 
+                 let x = (centerX - w/2 - padX) / scale
+                 let y = (centerY - h/2 - padY) / scale
+                 let width = w / scale
+                 let height = h / scale
+                 let rect = CGRect(x: x, y: y,
+                                   width: width, height: height)
  
- if highestScore > confidenceThreshold {
- let centerX = CGFloat(ptr[0 * numAnchors + i])
- let centerY = CGFloat(ptr[1 * numAnchors + i])
- let w = CGFloat(ptr[2 * numAnchors + i])
- let h = CGFloat(ptr[3 * numAnchors + i])
+                 allDetections.append(Detection(box: rect, confidence: highestScore, classIndex: bestClassIndex, className: classes[bestClassIndex]))
+             }
+         }
+         
+         if allDetections.count > 55 {
+             allDetections = Array(allDetections.sorted { $0.confidence > $1.confidence }.prefix(300))
+         }
+         return nMS(detections: allDetections)
+     }
+     
+     func nMS(detections: [Detection], iouThreshold: CGFloat = 0.45) -> [Detection] {
+         if detections.isEmpty { return [] }
+
+         var sortedDetections = detections.sorted { $0.confidence > $1.confidence }
+         var keptDetections = [Detection]()
+         var suppressed = Array(repeating: false, count: sortedDetections.count)
+
+         for i in 0..<sortedDetections.count {
+             if suppressed[i] { continue }
+
+             let best = sortedDetections[i]
+             keptDetections.append(best)
+
+             for j in (i + 1)..<sortedDetections.count {
+                 if suppressed[j] { continue }
+                 let other = sortedDetections[j]
+
+                 if best.classIndex != other.classIndex { continue }
+
+                 let intersection = best.box.intersection(other.box)
+                 let intersectionArea = intersection.width * intersection.height
+                 if intersectionArea <= 0 { continue }
+
+                 let unionArea =
+                     (best.box.width * best.box.height) +
+                     (other.box.width * other.box.height) -
+                     intersectionArea
+
+                 if (intersectionArea / unionArea) > iouThreshold {
+                     suppressed[j] = true
+                 }
+             }
+         }
+
+         return keptDetections
+     }
  
- // Convert Normalized Model Coordinates to Pixel Coordinates
- // Vision outputs are relative to the input image size
- let rect = CGRect(x: (centerX - w/2) * currentImageSize.width / targetW,
- y: (centerY - h/2) * currentImageSize.height / targetH,
- width: w * currentImageSize.width / targetW,
- height: h * currentImageSize.height / targetH)
+   
+     func drawDetections(on image: UIImage, detections: [Detection]) -> UIImage {
+         UIGraphicsBeginImageContextWithOptions(image.size, false, 0.0)
+         image.draw(at: .zero)
+         let context = UIGraphicsGetCurrentContext()
+         for det in detections {
+             context?.setLineWidth(max(image.size.width/200, 2.0))
+             context?.setStrokeColor(UIColor.green.cgColor)
+             context?.stroke(det.box)
+             
+             //let label = "\(det.className) \(String(format: "%.2f", det.confidence))"
+             let label = "\(det.className)"
+             
+             let fontSize = max(image.size.width / 40, 14)
+             let font = UIFont.boldSystemFont(ofSize: fontSize)
+             
+             let attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: UIColor.white
+             ]
+             
+             let textSize = label.size(withAttributes: attributes)
+             
+             // Position text above bounding box
+             var textRect = CGRect(
+                x: det.box.origin.x,
+                y: det.box.origin.y - textSize.height - 4,
+                width: textSize.width + 8,
+                height: textSize.height + 4
+             )
+             
+             // Prevent label from going outside top boundary
+             if textRect.origin.y < 0 {
+                 textRect.origin.y = det.box.origin.y + 2
+             }
+             
+             // Draw background rectangle
+             //context?.setFillColor(UIColor.green.cgColor)
+             //context?.fill(textRect)
+             
+             // Draw text
+             let textPoint = CGPoint(
+                x: textRect.origin.x + 4,
+                y: textRect.origin.y + 2
+             )
+             
+             label.draw(at: textPoint, withAttributes: attributes)
+         }
+                 
+         let result = UIGraphicsGetImageFromCurrentImageContext()
+         UIGraphicsEndImageContext()
+         return result ?? image
+     }
+    }
  
- allDetections.append(Detection(box: rect, confidence: highestScore, classIndex: bestClassIndex, className: classes[bestClassIndex]))
- }
- }
- return nMS(detections: allDetections)
- }
+    guard let modelURL = Bundle.main.url(forResource: "wsn_sn_sn_11n480_640", withExtension: "mlmodelc") else {
+        fatalError("Model file not found.")
+    }
  
- func nMS(detections: [Detection], iouThreshold: CGFloat = 0.45) -> [Detection] {
- var sortedDetections = detections.sorted { $0.confidence > $1.confidence }
- var keptDetections = [Detection]()
- while !sortedDetections.isEmpty {
- let best = sortedDetections.removeFirst()
- keptDetections.append(best)
- sortedDetections.removeAll { other in
- let intersection = best.box.intersection(other.box)
- let intersectionArea = intersection.width * intersection.height
- let unionArea = (best.box.width * best.box.height) + (other.box.width * other.box.height) - intersectionArea
- return (intersectionArea / unionArea) > iouThreshold && best.classIndex == other.classIndex
- }
- }
- return keptDetections
- }
+    do {
+        // 1. Initialize with Vision-ready Detector
+        let detector = try DetectorVision(modelPath: modelURL, targetW: 640, targetH: 480)
  
- func drawDetections(on image: UIImage, detections: [Detection]) -> UIImage {
- UIGraphicsBeginImageContextWithOptions(image.size, false, 0.0)
- image.draw(at: .zero)
- let context = UIGraphicsGetCurrentContext()
- for det in detections {
- context?.setLineWidth(max(image.size.width/200, 2.0))
- context?.setStrokeColor(UIColor.green.cgColor)
- context?.stroke(det.box)
- }
- let result = UIGraphicsGetImageFromCurrentImageContext()
- UIGraphicsEndImageContext()
- return result ?? image
- }
- }
+        // 2. Get images from the subdirectory
+        let extensions = ["png", "jpg", "jpeg"]
+        let folderName = "testImages"
  
- guard let modelURL = Bundle.main.url(forResource: "wsn_sn_sn_11n480_640_half", withExtension: "mlmodelc") else {
- fatalError("Model file not found.")
- }
+        // Bundle.main.urls specifically for the subdirectory
+        let imageURLs = Bundle.main.urls(forResourcesWithExtension: nil, subdirectory: folderName)?.filter { url in
+            extensions.contains(url.pathExtension.lowercased())
+        } ?? []
  
- do {
- // 1. Initialize with Vision-ready Detector
- let detector = try DetectorVision(modelPath: modelURL, targetW: 640, targetH: 480)
+        print("Found \(imageURLs.count) images. Starting Vision Inference...")
  
- // 2. Get images from the subdirectory
- let extensions = ["png", "jpg", "jpeg"]
- let folderName = "testImages"
+        // 3. Loop with memory management
+        for url in imageURLs {
+            autoreleasepool {
+                let fileName = url.lastPathComponent
+                print("Processing: \(fileName)")
  
- // Bundle.main.urls specifically for the subdirectory
- let imageURLs = Bundle.main.urls(forResourcesWithExtension: nil, subdirectory: folderName)?.filter { url in
- extensions.contains(url.pathExtension.lowercased())
- } ?? []
+                // pass the full URL now for the VNImageRequestHandler to handle efficiently
+                // 'show: false' keeps the result sidebar clean and maximizes performance
+                _ = detector.inference(url: url, confidenceThreshold: 0.50, show: true)
+            }
+        }
  
- print("Found \(imageURLs.count) images. Starting Vision Inference...")
+        print("\n----------- DONE ------------")
  
- // 3. Loop with memory management
- for url in imageURLs {
- autoreleasepool {
- let fileName = url.lastPathComponent
- print("Processing: \(fileName)")
+    } catch {
+        print("Initialization failed: \(error)")
+    }
  
- // We pass the full URL now for the VNImageRequestHandler to handle efficiently
- // 'show: false' keeps the result sidebar clean and maximizes performance
- _ = detector.inference(url: url, confidenceThreshold: 0.75, show: false)
- }
- }
- 
- print("\n************* DONE *****************")
- 
- } catch {
- print("Initialization failed: \(error)")
- }
- */
