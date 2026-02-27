@@ -5,10 +5,13 @@ import Vision
 var greeting = "Hello, playground"
 print(greeting)
 print("Hi")
+
+
+
 // CONFIGURATION
-/*
-let targetW: CGFloat = 640
-let targetH: CGFloat = 480
+
+let targetW: CGFloat = 640  // model' W
+let targetH: CGFloat = 480 // MODEL'S H  NOT THE original frame's h
 let imageName = "1.png"
 
 struct Detection {
@@ -126,7 +129,7 @@ func postProcess(multiArray: MLMultiArray, confidenceThreshold: Float = 0.5) ->[
     
     // Safety check: Ensure the model is actually giving us Float32
     guard multiArray.dataType == .float32 else {
-        print("❌ Error: MultiArray is not Float32. Type is: \(multiArray.dataType.rawValue)")
+        print("Error: MultiArray is not Float32. Type is: \(multiArray.dataType.rawValue)")
         return [Detection]()
     }
 
@@ -174,13 +177,100 @@ func postProcess(multiArray: MLMultiArray, confidenceThreshold: Float = 0.5) ->[
 
 
 
+func printModelPredictions(_ prediction: MLFeatureProvider, classNames: [String]? = nil) {
+    print("\n=== Model Predictions NO NMS ===")
+    var detections: [Detection] = []
+    
+    if let confidenceMultiArray = prediction.featureValue(for: "confidence")?.multiArrayValue,
+       let coordinatesMultiArray = prediction.featureValue(for: "coordinates")? .multiArrayValue{
+        let shape = confidenceMultiArray.shape.map { $0.intValue }
+        let coordShape = coordinatesMultiArray.shape.map{$0.intValue}
+        print("Confidence shape: \(shape)")
+        print("Coordinates shape: \(coordShape)")
+        
+        if shape.count == 1 {
+            let numClasses = shape[0]
+            var maxConf = 0.0
+            var maxClass = 0
+            
+            for i in 0..<numClasses {
+                let conf = confidenceMultiArray[i].doubleValue
+                if conf > maxConf {
+                    maxConf = conf
+                    maxClass = i
+                }
+            }
+            
+            let className = classNames?[maxClass] ?? "Class \(maxClass)"
+            print("\nTop prediction: \(className) with confidence \(String(format: "%.4f", maxConf))")
+            
+        } else if shape.count == 2 {
+            //print("ElseIf shape = 2")
+            let numDetections = shape[0]
+            let numClasses = shape[1]
+            let numCoords = coordShape.count == 2 ? coordShape[1] : 4
+            
+            print("\nDetections:")
+            for det in 0..<numDetections {
+                var maxConf = 0.0
+                var maxClass = 0
+                
+                for cls in 0..<numClasses {
+                    let index = det * numClasses + cls
+                    let conf = confidenceMultiArray[index].doubleValue
+                    if conf > maxConf {
+                        maxConf = conf
+                        maxClass = cls
+                    }
+                }
+                
+                if maxConf > 0.80 {
+                    let className = classNames?[maxClass] ?? "Class \(maxClass)"
+                    var coords: [Double] = []
+                    for c in 0..<numCoords {
+                        let coordIndex = det * numCoords + c
+                        coords.append(coordinatesMultiArray[coordIndex].doubleValue)
+                    }
+                    if coords.count >= 4 {
+                        // normalized → pixel
+                        let pixelX = CGFloat(coords[0]) * targetW
+                        let pixelY = CGFloat(coords[1]) * targetH
+                        let pixelW = CGFloat(coords[2]) * targetW
+                        let pixelH = CGFloat(coords[3]) * targetH
+                        // center → top-left
+                         let rect = CGRect(
+                            x: pixelX - pixelW / 2,
+                            y: pixelY - pixelH / 2,
+                            width: pixelW,
+                            height: pixelH
+                            )
+                        let detection = Detection(
+                            box: rect,
+                            confidence: Float(maxConf),
+                            classIndex: maxClass,
+                            className: className
+                            )
+                        detections.append(detection)
+                        
+                        print("Det \(det): \(className), Confidence \(String(format: "%.4f", maxConf)), x: \(String(format: "%.1f", pixelX)), y: \(String(format: "%.1f", pixelY)), w: \(String(format: "%.1f", pixelW)), h: \(String(format: "%.1f", pixelH))")
+                    }
+                }
+                
+            }
+        }
+    }
+    //print("Detection \(detections)")
+    print("========================\n")
+}
+
+
 
 let config = MLModelConfiguration()
 config.computeUnits = .all
 let allResources = Bundle.main.urls(forResourcesWithExtension: nil, subdirectory:nil) ?? []
 print("Files detected in Resources: \(allResources.map { $0.lastPathComponent })")
 do{
-    guard let modelURL=Bundle.main.url(forResource: "wsn_sn_sn_11n480_640", withExtension:"mlmodelc") else{ print("Check: Is the filename spelled exactly right? Is it in the Resources sidebar?")
+    guard let modelURL=Bundle.main.url(forResource: "wsn_sn_sn_11n480_640_nms", withExtension:"mlmodelc") else{ print("Check: Is the filename spelled exactly right? Is it in the Resources sidebar?")
         fatalError()
     }
     let model = try MLModel(contentsOf: modelURL, configuration: config)
@@ -206,8 +296,13 @@ do{
                 }
                 
                 if let outputMultiArray = prediction.featureValue(for: "var_1227")?.multiArrayValue {
-                    ostProcess(multiArray: outputMultiArray, confidenceThreshold: 0.80)
+                    postProcess(multiArray: outputMultiArray, confidenceThreshold: 0.80)
+                }else {
+                    // Model has confidence/coordinates outputs - use standard function
+                    let classNames = ["w", "s", "n", "sn", "ss"]
+                    printModelPredictions(prediction, classNames: classNames)
                 }
+                
                 
             }
         }
@@ -216,7 +311,7 @@ do{
 }catch{
     print("CoreML Error:\(error.localizedDescription)")
 }
- */
+
 
 /*
 class Detector {
@@ -512,6 +607,8 @@ do {
 
  */
 
+/* 
+
  print("DetecotVision")
  
  class DetectorVision {
@@ -588,6 +685,112 @@ do {
              return self.drawDetections(on: sourceImage, detections: detections)
          }
          return nil
+     }
+ 
+ 
+ func postProcessNoNms(confidenceArray: MLMultiArray, coordinatesArray: MLMultiArray, confidenceThreshold: Float = 0.5) -> [Detection] {
+         
+         let confShape = confidenceArray.shape.map { $0.intValue }
+         let coordShape = coordinatesArray.shape.map { $0.intValue }
+         
+         print("Confidence shape: \(confShape)")
+         print("Coordinates shape: \(coordShape)")
+         
+         let classes = ["w", "s", "n", "sn", "ss"]
+         var allDetections = [Detection]()
+         
+         let scale = min(targetW / currentImageSize.width,
+                        targetH / currentImageSize.height)
+         let scaledWidth = currentImageSize.width * scale
+         let scaledHeight = currentImageSize.height * scale
+         let padX = (targetW - scaledWidth) / 2
+         let padY = (targetH - scaledHeight) / 2
+         
+         // Handle different confidence shapes
+         if confShape.count == 2 {
+             // Shape: [numDetections, numClasses]
+             let numDetections = confShape[0]
+             let numClasses = confShape[1]
+             
+             let confPtr = confidenceArray.dataPointer.assumingMemoryBound(to: Float.self)
+             let coordPtr = coordinatesArray.dataPointer.assumingMemoryBound(to: Float.self)
+             
+             for det in 0..<numDetections {
+                 var maxConf: Float = 0.0
+                 var maxClass = 0
+                 
+                 // Find highest confidence class
+                 for cls in 0..<numClasses {
+                     let conf = confPtr[det * numClasses + cls]
+                     if conf > maxConf {
+                         maxConf = conf
+                         maxClass = cls
+                     }
+                 }
+                 
+                 if maxConf > confidenceThreshold {
+                     // Extract coordinates (assuming format: x1, y1, x2, y2)
+                     let x1 = CGFloat(coordPtr[det * 4 + 0])
+                     let y1 = CGFloat(coordPtr[det * 4 + 1])
+                     let x2 = CGFloat(coordPtr[det * 4 + 2])
+                     let y2 = CGFloat(coordPtr[det * 4 + 3])
+                     
+                     // Convert to image coordinates
+                     let x = (x1 - padX) / scale
+                     let y = (y1 - padY) / scale
+                     let width = (x2 - x1) / scale
+                     let height = (y2 - y1) / scale
+                     
+                     let rect = CGRect(x: x, y: y, width: width, height: height)
+                     let className = maxClass < classes.count ? classes[maxClass] : "Class \(maxClass)"
+                     
+                     allDetections.append(Detection(
+                         box: rect,
+                         confidence: maxConf,
+                         classIndex: maxClass,
+                         className: className
+                     ))
+                 }
+             }
+         } else if confShape.count == 1 {
+             // Shape: [numDetections] - single class detection
+             let numDetections = confShape[0]
+             
+             let confPtr = confidenceArray.dataPointer.assumingMemoryBound(to: Float.self)
+             let coordPtr = coordinatesArray.dataPointer.assumingMemoryBound(to: Float.self)
+             
+             for det in 0..<numDetections {
+                 let conf = confPtr[det]
+                 
+                 if conf > confidenceThreshold {
+                     // Extract coordinates
+                     let x1 = CGFloat(coordPtr[det * 4 + 0])
+                     let y1 = CGFloat(coordPtr[det * 4 + 1])
+                     let x2 = CGFloat(coordPtr[det * 4 + 2])
+                     let y2 = CGFloat(coordPtr[det * 4 + 3])
+                     
+                     // Convert to image coordinates
+                     let x = (x1 - padX) / scale
+                     let y = (y1 - padY) / scale
+                     let width = (x2 - x1) / scale
+                     let height = (y2 - y1) / scale
+                     
+                     let rect = CGRect(x: x, y: y, width: width, height: height)
+                     
+                     allDetections.append(Detection(
+                         box: rect,
+                         confidence: conf,
+                         classIndex: 0,
+                         className: classes[0]
+                     ))
+                 }
+             }
+         }
+         
+         print("Found \(allDetections.count) detections before NMS")
+         
+         // Apply NMS
+         return nMS(detections: allDetections)
      }
  
      // Optimized Post-process using direct pointer access (Unsafe)
@@ -779,3 +982,5 @@ do {
         print("Initialization failed: \(error)")
     }
  
+ */
+
