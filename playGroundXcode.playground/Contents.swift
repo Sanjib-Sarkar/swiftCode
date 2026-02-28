@@ -6,7 +6,7 @@ var greeting = "Hello, playground"
 print(greeting)
 print("Hi")
 
-
+/*
 
 // CONFIGURATION
 
@@ -302,26 +302,25 @@ do{
                     let classNames = ["w", "s", "n", "sn", "ss"]
                     printModelPredictions(prediction, classNames: classNames)
                 }
-                
-                
             }
         }
-    
-    
 }catch{
     print("CoreML Error:\(error.localizedDescription)")
 }
 
+ */
+
 
 /*
+
 class Detector {
     
     struct Detection {
-            let box: CGRect
-            let confidence: Float
-            let classIndex: Int
-            let className: String
-        }
+        let box: CGRect
+        let confidence: Float
+        let classIndex: Int
+        let className: String
+    }
     
     // Member variables (like a .h file)
     private var model: MLModel
@@ -330,70 +329,80 @@ class Detector {
     private var scale: CGFloat = 0
     private var xOffset: CGFloat = 0
     private var yOffset: CGFloat = 0
+    private var classNames: [String] = []
     
     init(modelPath: URL, targetW: CGFloat, targetH: CGFloat) throws {
-            let config = MLModelConfiguration()
-            config.computeUnits = .all
-            self.model = try MLModel(contentsOf: modelPath, configuration: config)
-            self.targetW = targetW
-            self.targetH = targetH
-        }
-
+        let config = MLModelConfiguration()
+        config.computeUnits = .all
+        self.model = try MLModel(contentsOf: modelPath, configuration: config)
+        self.targetW = targetW
+        self.targetH = targetH
+        self.classNames = ["w", "s", "n", "sn", "ss"]
+        
+    }
+    
     // --- Implementation (like a .cpp file) ---
     
     func inference(imagePath: String, confidenceThreshold: Float = 0.5, show: Bool = true) -> UIImage? {
         
-            let preProcessStart = CFAbsoluteTimeGetCurrent()
-            // 1. Load
-            guard let rawImg = self.loadImage(named: imagePath) else { return nil }
+        let preProcessStart = CFAbsoluteTimeGetCurrent()
+        // 1. Load
+        guard let rawImg = self.loadImage(named: imagePath) else { return nil }
+        
+        // 2. Pre-process (Updates scale and offsets internally)
+        let boxedImg = self.applyLetterbox(to: rawImg, targetSize: CGSize(width: self.targetW, height: self.targetH))
+        
+        guard let buffer = self.getPixelBuffer(from: boxedImg) else { return nil }
+        let preProcessTime = (CFAbsoluteTimeGetCurrent() - preProcessStart) * 1000
+        
+        do {
+            // 3. Predict
+            let inferenceStart = CFAbsoluteTimeGetCurrent()
             
-            // 2. Pre-process (Updates scale and offsets internally)
-            let boxedImg = self.applyLetterbox(to: rawImg, targetSize: CGSize(width: self.targetW, height: self.targetH))
+            let input = try MLDictionaryFeatureProvider(dictionary: ["image": buffer])
+            let prediction = try self.model.prediction(from: input)
             
-            guard let buffer = self.getPixelBuffer(from: boxedImg) else { return nil }
-            let preProcessTime = (CFAbsoluteTimeGetCurrent() - preProcessStart) * 1000
-           
-            do {
-                // 3. Predict
-                let inferenceStart = CFAbsoluteTimeGetCurrent()
-                
-                let input = try MLDictionaryFeatureProvider(dictionary: ["image": buffer])
-                let prediction = try self.model.prediction(from: input)
-                
-                let inferenceTime = (CFAbsoluteTimeGetCurrent() - inferenceStart) * 1000
-                       
-                
-                guard let outputArray = prediction.featureValue(for: "var_1227")?.multiArrayValue else { return nil }
-                
-                let postProcessStart = CFAbsoluteTimeGetCurrent()
-                // 4. Post-process (NMS)
-                let modelDetections = self.postProcess(multiArray: outputArray, confidenceThreshold: confidenceThreshold)
-                
-                // 5. Map to Original Coordinates (Reuses cached scale/offsets)
-                let finalResults = self.mapToOriginal(detections: modelDetections)
-                let postProcessTime = (CFAbsoluteTimeGetCurrent() - postProcessStart) * 1000
-                
-                //print("\n--- Timing Benchmarks ---")
-                print("Preprocessing:  \(String(format: "%.2f", preProcessTime)) ms")
-                print("Inference:      \(String(format: "%.2f", inferenceTime)) ms")
-                print("Post-processing: \(String(format: "%.2f", postProcessTime)) ms")
-                print("Total Pipeline: \(String(format: "%.2f", preProcessTime + inferenceTime + postProcessTime)) ms\n")
-                
-                
-                // 6. Visualization
-                if show {
-                    return self.drawDetections(on: rawImg, detections: finalResults)
-                }
-                
-                return rawImg
-                
-            } catch {
-                print("Inference Error: \(error)")
-                return nil
+            let inferenceTime = (CFAbsoluteTimeGetCurrent() - inferenceStart) * 1000
+            
+            
+            //guard let outputArray = prediction.featureValue(for: "var_1227")?.multiArrayValue else { return nil }
+            
+            let postProcessStart = CFAbsoluteTimeGetCurrent()
+            // 4. Post-process (NMS)
+            let modelDetections: [Detection]
+            if let outputMultiArray = prediction.featureValue(for: "var_1227")?.multiArrayValue {
+                modelDetections = self.postProcess(multiArray: outputMultiArray, confidenceThreshold: confidenceThreshold)
+            }else {
+                // Model has confidence/coordinates outputs - use standard function
+                let classNames = ["w", "s", "n", "sn", "ss"]
+                modelDetections = self.postProcessNoNms(prediction,confidenceThreshold: confidenceThreshold,classNames: classNames)
+                //let modelDetections = self.postProcess(multiArray: outputArray, confidenceThreshold: confidenceThreshold)
             }
+            // 5. Map to Original Coordinates (Reuses cached scale/offsets)
+            let finalResults = self.mapToOriginal(detections: modelDetections)
+            let postProcessTime = (CFAbsoluteTimeGetCurrent() - postProcessStart) * 1000
+            
+            //print("\n--- Timing Benchmarks ---")
+            print("Preprocessing:  \(String(format: "%.2f", preProcessTime)) ms")
+            print("Inference:      \(String(format: "%.2f", inferenceTime)) ms")
+            print("Post-processing: \(String(format: "%.2f", postProcessTime)) ms")
+            print("Total Pipeline: \(String(format: "%.2f", preProcessTime + inferenceTime + postProcessTime)) ms\n")
+            
+            
+            // 6. Visualization
+            if show {
+                return self.drawDetections(on: rawImg, detections: finalResults)
+            }
+            
+            return rawImg
+            
+        } catch {
+            print("Inference Error: \(error)")
+            return nil
         }
+    }
     
-
+    
     func loadImage(named name: String) -> UIImage? {
         guard let image = UIImage(named: name) else {
             print("Could not find \(name) in Resources.")
@@ -403,12 +412,12 @@ class Detector {
         let h = image.size.height
         //var c = 0
         //if let cgImage = image.cgImage {
-          //  c = cgImage.bitsPerPixel / cgImage.bitsPerComponent
+        //  c = cgImage.bitsPerPixel / cgImage.bitsPerComponent
         //}
         //print("Image Loaded: \(name)\nDimensions: \(Int(w)) w x \(Int(h)) h\nChannels: \(c)")
         return image
     }
-
+    
     func applyLetterbox(to image: UIImage, targetSize: CGSize) -> UIImage {
         // Calculate and ASSIGN to member variables for reuse
         self.scale = min(targetSize.width / image.size.width, targetSize.height / image.size.height)
@@ -433,7 +442,7 @@ class Detector {
         //print("Letterbox applied: \(Int(newW))x\(Int(newH)) image on \(Int(targetSize.width))x\(Int(targetSize.height)) canvas")
         return resultImage ?? image
     }
-
+    
     func mapToOriginal(detections: [Detection]) -> [Detection] {
         // Reuses self.scale, self.xOffset, and self.yOffset automatically
         return detections.map { det in
@@ -451,7 +460,7 @@ class Detector {
             )
         }
     }
-
+    
     func getPixelBuffer(from image: UIImage) -> CVPixelBuffer? {
         let attrs = [kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue, kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue] as CFDictionary
         var pixelBuffer: CVPixelBuffer?
@@ -473,7 +482,7 @@ class Detector {
         CVPixelBufferUnlockBaseAddress(buffer, .init(rawValue: 0))
         return buffer
     }
-
+    
     func nMS(detections: [Detection], iouThreshold: CGFloat = 0.45) -> [Detection] {
         var sortedDetections = detections.sorted { $0.confidence > $1.confidence }
         var keptDetections = [Detection]()
@@ -489,7 +498,7 @@ class Detector {
         }
         return keptDetections
     }
-
+    
     func postProcess(multiArray: MLMultiArray, confidenceThreshold: Float = 0.5) -> [Detection] {
         let numAttributes = multiArray.shape[1].intValue
         let numAnchors = multiArray.shape[2].intValue
@@ -527,32 +536,116 @@ class Detector {
     }
     
     func drawDetections(on image: UIImage, detections: [Detection]) -> UIImage {
-            UIGraphicsBeginImageContextWithOptions(image.size, false, 0.0)
-            image.draw(at: .zero)
-            let context = UIGraphicsGetCurrentContext()
+        UIGraphicsBeginImageContextWithOptions(image.size, false, 0.0)
+        image.draw(at: .zero)
+        let context = UIGraphicsGetCurrentContext()
+        
+        for det in detections {
+            context?.setLineWidth(4.0)
+            context?.setStrokeColor(UIColor.green.cgColor)
+            context?.stroke(det.box)
             
-            for det in detections {
-                context?.setLineWidth(4.0)
-                context?.setStrokeColor(UIColor.green.cgColor)
-                context?.stroke(det.box)
-                
-                let text = "\(det.className) \(Int(det.confidence * 100))%"
-                let attributes: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.boldSystemFont(ofSize: 48),
-                    .foregroundColor: UIColor.green,
-                    .backgroundColor: UIColor.black.withAlphaComponent(0.5)
-                ]
-                text.draw(at: CGPoint(x: det.box.origin.x, y: det.box.origin.y - 55), withAttributes: attributes)
-            }
-            
-            let result = UIGraphicsGetImageFromCurrentImageContext()
-            UIGraphicsEndImageContext()
-            return result ?? image
+            let text = "\(det.className) \(Int(det.confidence * 100))%"
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.boldSystemFont(ofSize: 48),
+                .foregroundColor: UIColor.green,
+                .backgroundColor: UIColor.black.withAlphaComponent(0.5)
+            ]
+            text.draw(at: CGPoint(x: det.box.origin.x, y: det.box.origin.y - 55), withAttributes: attributes)
         }
+        
+        let result = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return result ?? image
+    }
+    
+    func postProcessNoNms(_ prediction: MLFeatureProvider, confidenceThreshold: Float = 0.25, classNames: [String]? = nil) -> [Detection]  {
+        print("\n=== Model Predictions NO NMS ===")
+        var detections: [Detection] = []
+        
+        if let confidenceMultiArray = prediction.featureValue(for: "confidence")?.multiArrayValue,
+           let coordinatesMultiArray = prediction.featureValue(for: "coordinates")? .multiArrayValue{
+            let shape = confidenceMultiArray.shape.map { $0.intValue }
+            let coordShape = coordinatesMultiArray.shape.map{$0.intValue}
+            //print("Confidence shape: \(shape)")
+            //print("Coordinates shape: \(coordShape)")
+            
+            if shape.count == 1 {
+                let numClasses = shape[0]
+                var maxConf = 0.0
+                var maxClass = 0
+                
+                for i in 0..<numClasses {
+                    let conf = confidenceMultiArray[i].doubleValue
+                    if conf > maxConf {
+                        maxConf = conf
+                        maxClass = i
+                    }
+                }
+                
+                let className = classNames?[maxClass] ?? "Class \(maxClass)"
+                print("\nTop prediction: \(className) with confidence \(String(format: "%.4f", maxConf))")
+                
+            } else if shape.count == 2 {
+                //print("ElseIf shape = 2")
+                let numDetections = shape[0]
+                let numClasses = shape[1]
+                let numCoords = coordShape.count == 2 ? coordShape[1] : 4
+                
+                print("\nDetections:")
+                for det in 0..<numDetections {
+                    var maxConf = 0.0
+                    var maxClass = 0
+                    
+                    for cls in 0..<numClasses {
+                        let index = det * numClasses + cls
+                        let conf = confidenceMultiArray[index].doubleValue
+                        if conf > maxConf {
+                            maxConf = conf
+                            maxClass = cls
+                        }
+                    }
+                    
+                    if maxConf > Double(confidenceThreshold){
+                        let className = classNames?[maxClass] ?? "Class \(maxClass)"
+                        var coords: [Double] = []
+                        for c in 0..<numCoords {
+                            let coordIndex = det * numCoords + c
+                            coords.append(coordinatesMultiArray[coordIndex].doubleValue)
+                        }
+                        if coords.count >= 4 {
+                            // normalized → pixel
+                            let pixelX = CGFloat(coords[0]) * targetW
+                            let pixelY = CGFloat(coords[1]) * targetH
+                            let pixelW = CGFloat(coords[2]) * targetW
+                            let pixelH = CGFloat(coords[3]) * targetH
+                            // center → top-left
+                            let rect = CGRect(
+                                x: pixelX - pixelW / 2,
+                                y: pixelY - pixelH / 2,
+                                width: pixelW,
+                                height: pixelH
+                            )
+                            let detection = Detection(
+                                box: rect,
+                                confidence: Float(maxConf),
+                                classIndex: maxClass,
+                                className: className
+                            )
+                            detections.append(detection)
+                            
+                            print("Det \(det): \(className), Confidence \(String(format: "%.4f", maxConf)), x: \(String(format: "%.1f", pixelX)), y: \(String(format: "%.1f", pixelY)), w: \(String(format: "%.1f", pixelW)), h: \(String(format: "%.1f", pixelH))")
+                        }
+                    }
+                }
+            }
+        }
+        return detections
+    }
 }
+        
 
-
-guard let modelURL = Bundle.main.url(forResource: "wsn_sn_sn_11n480_640", withExtension: "mlmodelc") else {
+guard let modelURL = Bundle.main.url(forResource: "wsn_sn_sn_11n480_640_nms", withExtension: "mlmodelc") else {
     fatalError("Model file not found.")
 }
 
@@ -560,14 +653,14 @@ do {
     // 2. Initialize the class (Constructor)
     let detector = try Detector(modelPath: modelURL, targetW: 640, targetH: 480)
     
-    // 3. Run full inference in one line
+    /*
+    // Run full inference in one line
     if let resultImage = detector.inference(imagePath: "1.png", confidenceThreshold: 0.75, show: true) {
         // Display in Playground
         resultImage
-    }
+    }*/
     
     // loop through a folder
-    
     let extensions = ["png", "jpg", "jpeg"]
     let imageURLs = Bundle.main.urls(forResourcesWithExtension: nil, subdirectory: "testImages")?.filter { url in
             extensions.contains(url.pathExtension.lowercased())
@@ -595,7 +688,7 @@ do {
             print("\n Processing: \(fileName)")
             
             // Use the underscore to prevent the Playground from capturing the result
-            _ = detector.inference(imagePath: "testImages/\(fileName)", confidenceThreshold: 0.75, show: false)
+            _ = detector.inference(imagePath: "testImages/\(fileName)", confidenceThreshold: 0.35, show: true)
         }
     }
     print("*************DONE*****************")
@@ -604,383 +697,380 @@ do {
     print("Initialization failed: \(error)")
 }
 
-
  */
 
-/* 
 
  print("DetecotVision")
  
- class DetectorVision {
-     struct Detection {
-         let box: CGRect
-         let confidence: Float
-         let classIndex: Int
-         let className: String
-     }
-     private var model: VNCoreMLModel
-     private var targetW: CGFloat
-     private var targetH: CGFloat
- 
-     // Vision handles scaling automatically, but we store these to map boxes back
-     private var currentImageSize: CGSize = .zero
- 
-     init(modelPath: URL, targetW: CGFloat, targetH: CGFloat) throws {
-         let config = MLModelConfiguration()
-         config.computeUnits = .all
-         let coreMLModel = try MLModel(contentsOf: modelPath, configuration: config)
- 
-         // Wrap the CoreML model in a Vision model
-         self.model = try VNCoreMLModel(for: coreMLModel)
- 
-         self.targetW = targetW
-         self.targetH = targetH
-     }
- 
-     func inference(url: URL, confidenceThreshold: Float = 0.5, show: Bool = true) -> UIImage? {
-         // Vision prefers URLs or CGImages
-         let startTime = CFAbsoluteTimeGetCurrent()
-         var detections = [Detection]()
- 
-         let startPrep = CFAbsoluteTimeGetCurrent()
-         // 1. Get image size for coordinate mapping (Minimal overhead)
-         guard let sourceImage = UIImage(contentsOfFile: url.path),
-               let cgImage = sourceImage.cgImage else { return nil }
-         self.currentImageSize = sourceImage.size
- 
-         let prepTime = (CFAbsoluteTimeGetCurrent() - startPrep) * 1000
- 
-         // 2. Setup the Request
-         var inferenceTime: Double = 0
-         let request = VNCoreMLRequest(model: self.model) { request, error in
-             let startInf = CFAbsoluteTimeGetCurrent()
-             guard let results = request.results as? [VNCoreMLFeatureValueObservation],
-                   let multiArray = results.first?.featureValue.multiArrayValue else { return }
-             inferenceTime = (CFAbsoluteTimeGetCurrent() - startInf) * 1000
-             // Post-process using the unsafe pointer logic provided earlier
-             detections = self.postProcess(multiArray: multiArray, confidenceThreshold: confidenceThreshold)
- 
-         }
- 
-         // Crucial: This replaces your 'applyLetterbox' logic on the GPU
-         request.imageCropAndScaleOption = .scaleFit
- 
-         // 3. Perform the Request
-         let handler = VNImageRequestHandler(url: url, options: [:])
-         do {
-             try handler.perform([request])
-             } catch {
-                 print("Vision Error: \(error)")
-                 return nil
-             }
- 
-         let totalTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
- 
-         print("Image Prep: \(String(format: "%.2f", prepTime)) ms")
-         print("Inf + Post: \(String(format: "%.2f", inferenceTime)) ms")
-         print("Pipeline Total: \(String(format: "%.2f", totalTime)) ms")
-         print()
- 
-         if show {
-             return self.drawDetections(on: sourceImage, detections: detections)
-         }
-         return nil
-     }
- 
- 
- func postProcessNoNms(confidenceArray: MLMultiArray, coordinatesArray: MLMultiArray, confidenceThreshold: Float = 0.5) -> [Detection] {
-         
-         let confShape = confidenceArray.shape.map { $0.intValue }
-         let coordShape = coordinatesArray.shape.map { $0.intValue }
-         
-         print("Confidence shape: \(confShape)")
-         print("Coordinates shape: \(coordShape)")
-         
-         let classes = ["w", "s", "n", "sn", "ss"]
-         var allDetections = [Detection]()
-         
-         let scale = min(targetW / currentImageSize.width,
+class DetectorVision {
+    struct Detection {
+        let box: CGRect
+        let confidence: Float
+        let classIndex: Int
+        let className: String
+    }
+    private var model: VNCoreMLModel
+    private var targetW: CGFloat
+    private var targetH: CGFloat
+    private var classNames : [String] = []
+    
+    // Vision handles scaling automatically, but we store these to map boxes back
+    private var currentImageSize: CGSize = .zero
+    
+    init(modelPath: URL, targetW: CGFloat, targetH: CGFloat) throws {
+        let config = MLModelConfiguration()
+        config.computeUnits = .all
+        let coreMLModel = try MLModel(contentsOf: modelPath, configuration: config)
+        
+        // Wrap the CoreML model in a Vision model
+        self.model = try VNCoreMLModel(for: coreMLModel)
+        
+        self.targetW = targetW
+        self.targetH = targetH
+        self.classNames = ["w", "s", "n", "sn", "ss"]
+    }
+    
+    func inference(url: URL, confidenceThreshold: Float = 0.5, show: Bool = true) -> UIImage? {
+        
+        let startTime = CFAbsoluteTimeGetCurrent()
+        var detections = [Detection]()
+        
+        let startPrep = CFAbsoluteTimeGetCurrent()
+        
+        guard let sourceImage = UIImage(contentsOfFile: url.path),
+              let cgImage = sourceImage.cgImage else { return nil }
+        
+        self.currentImageSize = sourceImage.size
+        
+        let prepTime = (CFAbsoluteTimeGetCurrent() - startPrep) * 1000
+        
+        var inferenceTime: Double = 0
+        var postProcessTime: Double = 0
+        
+        let request = VNCoreMLRequest(model: self.model) { request, error in
+            
+            if let error = error {
+                print("Vision request error: \(error)")
+                return
+            }
+            
+            let startInf = CFAbsoluteTimeGetCurrent()
+            let detectionResults: [Detection]
+            
+            if let observations = request.results as? [VNCoreMLFeatureValueObservation] {
+                
+                if let multiArrayObs = observations.first(where: { $0.featureValue.multiArrayValue != nil }),
+                   let multiArray = multiArrayObs.featureValue.multiArrayValue {
+                    
+                    let ppStart = CFAbsoluteTimeGetCurrent()
+                    detectionResults = self.postProcess(
+                        multiArray: multiArray,
+                        confidenceThreshold: confidenceThreshold
+                    )
+                    postProcessTime = (CFAbsoluteTimeGetCurrent() - ppStart) * 1000
+                    
+                } else {
+                    
+                    var featureDict: [String: MLFeatureValue] = [:]
+                    for obs in observations {
+                        let name = obs.featureName
+                        featureDict[name] = obs.featureValue
+                    }
+                    
+                    if let prediction = try? MLDictionaryFeatureProvider(dictionary: featureDict) {
+                        
+                        let ppStart = CFAbsoluteTimeGetCurrent()
+                        detectionResults = self.postProcessNoNms(
+                            prediction,
+                            confidenceThreshold: confidenceThreshold,
+                            classNames: self.classNames
+                        )
+                        postProcessTime = (CFAbsoluteTimeGetCurrent() - ppStart) * 1000
+                        
+                    } else {
+                        detectionResults = []
+                    }
+                }
+                
+            } else {
+                detectionResults = []
+            }
+            
+            inferenceTime = (CFAbsoluteTimeGetCurrent() - startInf) * 1000
+            detections = detectionResults
+        }
+        
+        request.imageCropAndScaleOption = .scaleFit
+        
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        
+        do {
+            try handler.perform([request])
+        } catch {
+            print("Vision Error: \(error)")
+            return nil
+        }
+        
+        let totalTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+        
+        print("Image Prep: \(String(format: "%.2f", prepTime)) ms")
+        print("Inf + Post: \(String(format: "%.2f", inferenceTime)) ms")
+        print("Pipeline Total: \(String(format: "%.2f", totalTime)) ms")
+        print()
+        
+        if show {
+            return self.drawDetections(on: sourceImage, detections: detections)
+        }
+        
+        return nil
+    }
+    
+    // Optimized Post-process using direct pointer access (Unsafe)
+    func postProcess(multiArray: MLMultiArray, confidenceThreshold: Float = 0.5) -> [Detection] {
+        let numAttributes = multiArray.shape[1].intValue // 85 (4 box + 81 classes)
+        let numAnchors = multiArray.shape[2].intValue    // 8400
+        let numClasses = numAttributes - 4
+        let classes = ["w", "s", "n", "sn", "ss"]
+        
+        var allDetections = [Detection]()
+        // Direct pointer access bypasses Swift bounds checking
+        let ptr = multiArray.dataPointer.assumingMemoryBound(to: Float.self)
+        let scale = min(targetW / currentImageSize.width,
                         targetH / currentImageSize.height)
-         let scaledWidth = currentImageSize.width * scale
-         let scaledHeight = currentImageSize.height * scale
-         let padX = (targetW - scaledWidth) / 2
-         let padY = (targetH - scaledHeight) / 2
-         
-         // Handle different confidence shapes
-         if confShape.count == 2 {
-             // Shape: [numDetections, numClasses]
-             let numDetections = confShape[0]
-             let numClasses = confShape[1]
-             
-             let confPtr = confidenceArray.dataPointer.assumingMemoryBound(to: Float.self)
-             let coordPtr = coordinatesArray.dataPointer.assumingMemoryBound(to: Float.self)
-             
-             for det in 0..<numDetections {
-                 var maxConf: Float = 0.0
-                 var maxClass = 0
-                 
-                 // Find highest confidence class
-                 for cls in 0..<numClasses {
-                     let conf = confPtr[det * numClasses + cls]
-                     if conf > maxConf {
-                         maxConf = conf
-                         maxClass = cls
-                     }
-                 }
-                 
-                 if maxConf > confidenceThreshold {
-                     // Extract coordinates (assuming format: x1, y1, x2, y2)
-                     let x1 = CGFloat(coordPtr[det * 4 + 0])
-                     let y1 = CGFloat(coordPtr[det * 4 + 1])
-                     let x2 = CGFloat(coordPtr[det * 4 + 2])
-                     let y2 = CGFloat(coordPtr[det * 4 + 3])
-                     
-                     // Convert to image coordinates
-                     let x = (x1 - padX) / scale
-                     let y = (y1 - padY) / scale
-                     let width = (x2 - x1) / scale
-                     let height = (y2 - y1) / scale
-                     
-                     let rect = CGRect(x: x, y: y, width: width, height: height)
-                     let className = maxClass < classes.count ? classes[maxClass] : "Class \(maxClass)"
-                     
-                     allDetections.append(Detection(
-                         box: rect,
-                         confidence: maxConf,
-                         classIndex: maxClass,
-                         className: className
-                     ))
-                 }
-             }
-         } else if confShape.count == 1 {
-             // Shape: [numDetections] - single class detection
-             let numDetections = confShape[0]
-             
-             let confPtr = confidenceArray.dataPointer.assumingMemoryBound(to: Float.self)
-             let coordPtr = coordinatesArray.dataPointer.assumingMemoryBound(to: Float.self)
-             
-             for det in 0..<numDetections {
-                 let conf = confPtr[det]
-                 
-                 if conf > confidenceThreshold {
-                     // Extract coordinates
-                     let x1 = CGFloat(coordPtr[det * 4 + 0])
-                     let y1 = CGFloat(coordPtr[det * 4 + 1])
-                     let x2 = CGFloat(coordPtr[det * 4 + 2])
-                     let y2 = CGFloat(coordPtr[det * 4 + 3])
-                     
-                     // Convert to image coordinates
-                     let x = (x1 - padX) / scale
-                     let y = (y1 - padY) / scale
-                     let width = (x2 - x1) / scale
-                     let height = (y2 - y1) / scale
-                     
-                     let rect = CGRect(x: x, y: y, width: width, height: height)
-                     
-                     allDetections.append(Detection(
-                         box: rect,
-                         confidence: conf,
-                         classIndex: 0,
-                         className: classes[0]
-                     ))
-                 }
-             }
-         }
-         
-         print("Found \(allDetections.count) detections before NMS")
-         
-         // Apply NMS
-         return nMS(detections: allDetections)
-     }
- 
-     // Optimized Post-process using direct pointer access (Unsafe)
-     func postProcess(multiArray: MLMultiArray, confidenceThreshold: Float = 0.5) -> [Detection] {
-         
-         let numAttributes = multiArray.shape[1].intValue // 85 (4 box + 81 classes)
-         let numAnchors = multiArray.shape[2].intValue    // 8400
-         let numClasses = numAttributes - 4
-         let classes = ["w", "s", "n", "sn", "ss"]
- 
-         var allDetections = [Detection]()
- 
-         // Direct pointer access bypasses Swift bounds checking
-         let ptr = multiArray.dataPointer.assumingMemoryBound(to: Float.self)
-         
-         let scale = min(targetW / currentImageSize.width,
-                         targetH / currentImageSize.height)
-
-         let scaledWidth = currentImageSize.width * scale
-         let scaledHeight = currentImageSize.height * scale
-
-         let padX = (targetW - scaledWidth) / 2
-         let padY = (targetH - scaledHeight) / 2
- 
-         for i in 0..<numAnchors {
-             var highestScore: Float = 0
-             var bestClassIndex = -1
- 
-             for classIdx in 0..<numClasses {
-                 let score = ptr[(4 + classIdx) * numAnchors + i]
-                 if score > highestScore {
-                     highestScore = score
-                     bestClassIndex = classIdx
-                 }
-             }
- 
-             if highestScore > confidenceThreshold {
-                 let centerX = CGFloat(ptr[0 * numAnchors + i])
-                 let centerY = CGFloat(ptr[1 * numAnchors + i])
-                 let w = CGFloat(ptr[2 * numAnchors + i])
-                 let h = CGFloat(ptr[3 * numAnchors + i])
- 
-                 // Convert Normalized Model Coordinates to Pixel Coordinates
-                 // Vision outputs are relative to the input image size
-                 
-                 let x = (centerX - w/2 - padX) / scale
-                 let y = (centerY - h/2 - padY) / scale
-                 let width = w / scale
-                 let height = h / scale
-                 let rect = CGRect(x: x, y: y,
-                                   width: width, height: height)
- 
-                 allDetections.append(Detection(box: rect, confidence: highestScore, classIndex: bestClassIndex, className: classes[bestClassIndex]))
-             }
-         }
-         
-         if allDetections.count > 55 {
-             allDetections = Array(allDetections.sorted { $0.confidence > $1.confidence }.prefix(300))
-         }
-         return nMS(detections: allDetections)
-     }
-     
-     func nMS(detections: [Detection], iouThreshold: CGFloat = 0.45) -> [Detection] {
-         if detections.isEmpty { return [] }
-
-         var sortedDetections = detections.sorted { $0.confidence > $1.confidence }
-         var keptDetections = [Detection]()
-         var suppressed = Array(repeating: false, count: sortedDetections.count)
-
-         for i in 0..<sortedDetections.count {
-             if suppressed[i] { continue }
-
-             let best = sortedDetections[i]
-             keptDetections.append(best)
-
-             for j in (i + 1)..<sortedDetections.count {
-                 if suppressed[j] { continue }
-                 let other = sortedDetections[j]
-
-                 if best.classIndex != other.classIndex { continue }
-
-                 let intersection = best.box.intersection(other.box)
-                 let intersectionArea = intersection.width * intersection.height
-                 if intersectionArea <= 0 { continue }
-
-                 let unionArea =
-                     (best.box.width * best.box.height) +
-                     (other.box.width * other.box.height) -
-                     intersectionArea
-
-                 if (intersectionArea / unionArea) > iouThreshold {
-                     suppressed[j] = true
-                 }
-             }
-         }
-
-         return keptDetections
-     }
- 
-   
-     func drawDetections(on image: UIImage, detections: [Detection]) -> UIImage {
-         UIGraphicsBeginImageContextWithOptions(image.size, false, 0.0)
-         image.draw(at: .zero)
-         let context = UIGraphicsGetCurrentContext()
-         for det in detections {
-             context?.setLineWidth(max(image.size.width/200, 2.0))
-             context?.setStrokeColor(UIColor.green.cgColor)
-             context?.stroke(det.box)
-             
-             //let label = "\(det.className) \(String(format: "%.2f", det.confidence))"
-             let label = "\(det.className)"
-             
-             let fontSize = max(image.size.width / 40, 14)
-             let font = UIFont.boldSystemFont(ofSize: fontSize)
-             
-             let attributes: [NSAttributedString.Key: Any] = [
+        
+        let scaledWidth = currentImageSize.width * scale
+        let scaledHeight = currentImageSize.height * scale
+        
+        let padX = (targetW - scaledWidth) / 2
+        let padY = (targetH - scaledHeight) / 2
+        
+        for i in 0..<numAnchors {
+            var highestScore: Float = 0
+            var bestClassIndex = -1
+            
+            for classIdx in 0..<numClasses {
+                let score = ptr[(4 + classIdx) * numAnchors + i]
+                if score > highestScore {
+                    highestScore = score
+                    bestClassIndex = classIdx
+                }
+            }
+            
+            if highestScore > confidenceThreshold {
+                let centerX = CGFloat(ptr[0 * numAnchors + i])
+                let centerY = CGFloat(ptr[1 * numAnchors + i])
+                let w = CGFloat(ptr[2 * numAnchors + i])
+                let h = CGFloat(ptr[3 * numAnchors + i])
+                
+                // Convert Normalized Model Coordinates to Pixel Coordinates
+                // Vision outputs are relative to the input image size
+                let x = (centerX - w/2 - padX) / scale
+                let y = (centerY - h/2 - padY) / scale
+                let width = w / scale
+                let height = h / scale
+                let rect = CGRect(x: x, y: y,
+                                  width: width, height: height)
+                allDetections.append(Detection(box: rect, confidence: highestScore, classIndex: bestClassIndex, className: classes[bestClassIndex]))
+            }
+            
+        }
+        if allDetections.count > 55 {
+            allDetections = Array(allDetections.sorted { $0.confidence > $1.confidence }.prefix(300))
+        }
+        return nMS(detections: allDetections)
+    }
+    
+    func nMS(detections: [Detection], iouThreshold: CGFloat = 0.45) -> [Detection] {
+        if detections.isEmpty { return [] }
+        var sortedDetections = detections.sorted { $0.confidence > $1.confidence }
+        var keptDetections = [Detection]()
+        var suppressed = Array(repeating: false, count: sortedDetections.count)
+        
+        for i in 0..<sortedDetections.count {
+            if suppressed[i] { continue }
+            let best = sortedDetections[i]
+            keptDetections.append(best)
+            
+            for j in (i + 1)..<sortedDetections.count {
+                if suppressed[j] { continue }
+                let other = sortedDetections[j]
+                if best.classIndex != other.classIndex { continue }
+                let intersection = best.box.intersection(other.box)
+                let intersectionArea = intersection.width * intersection.height
+                if intersectionArea <= 0 { continue }
+                let unionArea =
+                (best.box.width * best.box.height) +
+                (other.box.width * other.box.height) -
+                intersectionArea
+                if (intersectionArea / unionArea) > iouThreshold {
+                    suppressed[j] = true
+                }
+            }
+        }
+        return keptDetections
+    }
+    
+    func drawDetections(on image: UIImage, detections: [Detection]) -> UIImage {
+        UIGraphicsBeginImageContextWithOptions(image.size, false, 0.0)
+        image.draw(at: .zero)
+        let context = UIGraphicsGetCurrentContext()
+        for det in detections {
+            context?.setLineWidth(max(image.size.width/200, 2.0))
+            context?.setStrokeColor(UIColor.green.cgColor)
+            context?.stroke(det.box)
+            //let label = "\(det.className) \(String(format: "%.2f", det.confidence))"
+            let label = "\(det.className)"
+            
+            let fontSize = max(image.size.width / 40, 14)
+            let font = UIFont.boldSystemFont(ofSize: fontSize)
+            
+            let attributes: [NSAttributedString.Key: Any] = [
                 .font: font,
-                .foregroundColor: UIColor.white
-             ]
-             
-             let textSize = label.size(withAttributes: attributes)
-             
-             // Position text above bounding box
-             var textRect = CGRect(
+                .foregroundColor: UIColor.white]
+            let textSize = label.size(withAttributes: attributes)
+            
+            // Position text above bounding box
+            var textRect = CGRect(
                 x: det.box.origin.x,
                 y: det.box.origin.y - textSize.height - 4,
                 width: textSize.width + 8,
                 height: textSize.height + 4
-             )
-             
-             // Prevent label from going outside top boundary
-             if textRect.origin.y < 0 {
-                 textRect.origin.y = det.box.origin.y + 2
-             }
-             
-             // Draw background rectangle
-             //context?.setFillColor(UIColor.green.cgColor)
-             //context?.fill(textRect)
-             
-             // Draw text
-             let textPoint = CGPoint(
+            )
+            // Prevent label from going outside top boundary
+            if textRect.origin.y < 0 {
+                textRect.origin.y = det.box.origin.y + 2
+            }
+            
+            // Draw background rectangle
+            //context?.setFillColor(UIColor.green.cgColor)
+            //context?.fill(textRect)
+            
+            // Draw text
+            let textPoint = CGPoint(
                 x: textRect.origin.x + 4,
                 y: textRect.origin.y + 2
-             )
-             
-             label.draw(at: textPoint, withAttributes: attributes)
-         }
-                 
-         let result = UIGraphicsGetImageFromCurrentImageContext()
-         UIGraphicsEndImageContext()
-         return result ?? image
-     }
+            )
+            label.draw(at: textPoint, withAttributes: attributes)
+        }
+        let result = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return result ?? image
     }
- 
-    guard let modelURL = Bundle.main.url(forResource: "wsn_sn_sn_11n480_640", withExtension: "mlmodelc") else {
-        fatalError("Model file not found.")
-    }
- 
-    do {
-        // 1. Initialize with Vision-ready Detector
-        let detector = try DetectorVision(modelPath: modelURL, targetW: 640, targetH: 480)
- 
-        // 2. Get images from the subdirectory
-        let extensions = ["png", "jpg", "jpeg"]
-        let folderName = "testImages"
- 
-        // Bundle.main.urls specifically for the subdirectory
-        let imageURLs = Bundle.main.urls(forResourcesWithExtension: nil, subdirectory: folderName)?.filter { url in
-            extensions.contains(url.pathExtension.lowercased())
-        } ?? []
- 
-        print("Found \(imageURLs.count) images. Starting Vision Inference...")
- 
-        // 3. Loop with memory management
-        for url in imageURLs {
-            autoreleasepool {
-                let fileName = url.lastPathComponent
-                print("Processing: \(fileName)")
- 
-                // pass the full URL now for the VNImageRequestHandler to handle efficiently
-                // 'show: false' keeps the result sidebar clean and maximizes performance
-                _ = detector.inference(url: url, confidenceThreshold: 0.50, show: true)
+    
+    func postProcessNoNms(_ prediction: MLFeatureProvider, confidenceThreshold: Float = 0.25, classNames: [String]? = nil) -> [Detection]  {
+        print("\n=== Model Predictions NO NMS ===")
+        var detections: [Detection] = []
+        
+        if let confidenceMultiArray = prediction.featureValue(for: "confidence")?.multiArrayValue,
+           let coordinatesMultiArray = prediction.featureValue(for: "coordinates")? .multiArrayValue{
+            let shape = confidenceMultiArray.shape.map { $0.intValue }
+            let coordShape = coordinatesMultiArray.shape.map{$0.intValue}
+            //print("Confidence shape: \(shape)")
+            //print("Coordinates shape: \(coordShape)")
+            if shape.count == 1 {
+                let numClasses = shape[0]
+                var maxConf = 0.0
+                var maxClass = 0
+                
+                for i in 0..<numClasses {
+                    let conf = confidenceMultiArray[i].doubleValue
+                    if conf > maxConf {
+                        maxConf = conf
+                        maxClass = i
+                    }
+                }
+                let className = classNames?[maxClass] ?? "Class \(maxClass)"
+                print("\nTop prediction: \(className) with confidence \(String(format: "%.4f", maxConf))")
+            }else if shape.count == 2 {
+                //print("ElseIf shape = 2")
+                let numDetections = shape[0]
+                let numClasses = shape[1]
+                let numCoords = coordShape.count == 2 ? coordShape[1] : 4
+                
+                print("\nDetections:")
+                for det in 0..<numDetections {
+                    var maxConf = 0.0
+                    var maxClass = 0
+                    
+                    for cls in 0..<numClasses {
+                        let index = det * numClasses + cls
+                        let conf = confidenceMultiArray[index].doubleValue
+                        if conf > maxConf {
+                            maxConf = conf
+                            maxClass = cls
+                        }
+                    }
+                    
+                    if maxConf > Double(confidenceThreshold){
+                        let className = classNames?[maxClass] ?? "Class \(maxClass)"
+                        var coords: [Double] = []
+                        for c in 0..<numCoords {
+                            let coordIndex = det * numCoords + c
+                            coords.append(coordinatesMultiArray[coordIndex].doubleValue)
+                        }
+                        if coords.count >= 4 {
+                            // normalized → pixel
+                            let pixelX = CGFloat(coords[0]) * targetW
+                            let pixelY = CGFloat(coords[1]) * targetH
+                            let pixelW = CGFloat(coords[2]) * targetW
+                            let pixelH = CGFloat(coords[3]) * targetH
+                            // center → top-left
+                            let rect = CGRect(
+                                x: pixelX - pixelW / 2,
+                                y: pixelY - pixelH / 2,
+                                width: pixelW,
+                                height: pixelH
+                            )
+                            let detection = Detection(
+                                box: rect,
+                                confidence: Float(maxConf),
+                                classIndex: maxClass,
+                                className: className
+                            )
+                            detections.append(detection)
+                            
+                            print("Det \(det): \(className), Confidence \(String(format: "%.4f", maxConf)), x: \(String(format: "%.1f", pixelX)), y: \(String(format: "%.1f", pixelY)), w: \(String(format: "%.1f", pixelW)), h: \(String(format: "%.1f", pixelH))")
+                        }
+                    }
+                }
             }
         }
- 
-        print("\n----------- DONE ------------")
- 
-    } catch {
-        print("Initialization failed: \(error)")
+        return detections
     }
+}
+
+guard let modelURL = Bundle.main.url(forResource: "wsn_sn_sn_11n480_640_nms", withExtension: "mlmodelc") else {
+    fatalError("Model file not found.")
+}
+
+do {
+    // 1. Initialize with Vision-ready Detector
+    let detector = try DetectorVision(modelPath: modelURL, targetW: 640, targetH: 480)
+    // 2. Get images from the subdirectory
+    let extensions = ["png", "jpg", "jpeg"]
+    let folderName = "testImages"
+    // Bundle.main.urls specifically for the subdirectory
+    let imageURLs = Bundle.main.urls(forResourcesWithExtension: nil, subdirectory: folderName)?.filter { url in
+        extensions.contains(url.pathExtension.lowercased())
+    } ?? []
+    
+    print("Found \(imageURLs.count) images. Starting Vision Inference...")
+    
+    // 3. Loop with memory management
+    for url in imageURLs {
+        autoreleasepool {
+            let fileName = url.lastPathComponent
+            print("Processing: \(fileName)")
+            // pass the full URL now for the VNImageRequestHandler to handle efficiently
+            // 'show: false' keeps the result sidebar clean and maximizes performance
+            _ = detector.inference(url: url, confidenceThreshold: 0.50, show: true)
+        }
+    }
+    print("\n----------- DONE ------------")
+    
+} catch {
+    print("Initialization failed: \(error)")
+}
  
- */
+
 
