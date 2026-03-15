@@ -700,7 +700,7 @@ do {
  */
 
 
- print("DetecotVision")
+ print("Detecot Vision")
  
 class DetectorVision {
     struct Detection {
@@ -708,10 +708,14 @@ class DetectorVision {
         let confidence: Float
         let classIndex: Int
         let className: String
+        
     }
     private var model: VNCoreMLModel
     private var targetW: CGFloat
     private var targetH: CGFloat
+    private var scale: CGFloat = 0
+    private var xOffset: CGFloat = 0
+    private var yOffset: CGFloat = 0
     private var classNames : [String] = []
     
     // Vision handles scaling automatically, but we store these to map boxes back
@@ -731,12 +735,10 @@ class DetectorVision {
     }
     
     func inference(url: URL, confidenceThreshold: Float = 0.5, show: Bool = true) -> UIImage? {
-        
         let startTime = CFAbsoluteTimeGetCurrent()
         var detections = [Detection]()
         
         let startPrep = CFAbsoluteTimeGetCurrent()
-        
         guard let sourceImage = UIImage(contentsOfFile: url.path),
               let cgImage = sourceImage.cgImage else { return nil }
         
@@ -744,61 +746,32 @@ class DetectorVision {
         
         let prepTime = (CFAbsoluteTimeGetCurrent() - startPrep) * 1000
         
+        var modelDetections: [Detection] = []
         var inferenceTime: Double = 0
-        var postProcessTime: Double = 0
         
         let request = VNCoreMLRequest(model: self.model) { request, error in
-            
             if let error = error {
-                print("Vision request error: \(error)")
+                print("Vision Error in closure:", error)
                 return
             }
-            
-            let startInf = CFAbsoluteTimeGetCurrent()
-            let detectionResults: [Detection]
-            
-            if let observations = request.results as? [VNCoreMLFeatureValueObservation] {
-                
-                if let multiArrayObs = observations.first(where: { $0.featureValue.multiArrayValue != nil }),
-                   let multiArray = multiArrayObs.featureValue.multiArrayValue {
-                    
-                    let ppStart = CFAbsoluteTimeGetCurrent()
-                    detectionResults = self.postProcess(
-                        multiArray: multiArray,
-                        confidenceThreshold: confidenceThreshold
-                    )
-                    postProcessTime = (CFAbsoluteTimeGetCurrent() - ppStart) * 1000
-                    
-                } else {
-                    
-                    var featureDict: [String: MLFeatureValue] = [:]
-                    for obs in observations {
-                        let name = obs.featureName
-                        featureDict[name] = obs.featureValue
-                    }
-                    
-                    if let prediction = try? MLDictionaryFeatureProvider(dictionary: featureDict) {
-                        
-                        let ppStart = CFAbsoluteTimeGetCurrent()
-                        detectionResults = self.postProcessNoNms(
-                            prediction,
-                            confidenceThreshold: confidenceThreshold,
-                            classNames: self.classNames
-                        )
-                        postProcessTime = (CFAbsoluteTimeGetCurrent() - ppStart) * 1000
-                        
-                    } else {
-                        detectionResults = []
-                    }
-                }
-                
-            } else {
-                detectionResults = []
+
+            guard let results = request.results as? [VNCoreMLFeatureValueObservation], !results.isEmpty else {
+                print("Vision returned nil or empty results")
+                return
             }
-            
-            inferenceTime = (CFAbsoluteTimeGetCurrent() - startInf) * 1000
-            detections = detectionResults
+
+            print("=== Vision Observations ===")
+            for (i, observation) in results.enumerated() {
+                if let multiArray = observation.featureValue.multiArrayValue {
+                    let shape = multiArray.shape.map { $0.intValue }
+                    print("Observation \(i): Feature Name = \(observation.featureName), Shape = \(shape)")
+                } else {
+                    print("Observation \(i): Feature Name = \(observation.featureName), Value = \(observation.featureValue)")
+                }
+            }
+            print("==========================")
         }
+        
         
         request.imageCropAndScaleOption = .scaleFit
         
@@ -813,13 +786,16 @@ class DetectorVision {
         
         let totalTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
         
+        let finalResults = self.mapToOriginal(detections: modelDetections)
+        
+        
         print("Image Prep: \(String(format: "%.2f", prepTime)) ms")
         print("Inf + Post: \(String(format: "%.2f", inferenceTime)) ms")
         print("Pipeline Total: \(String(format: "%.2f", totalTime)) ms")
         print()
         
         if show {
-            return self.drawDetections(on: sourceImage, detections: detections)
+            return self.drawDetections(on: sourceImage, detections: finalResults)
         }
         
         return nil
@@ -957,30 +933,28 @@ class DetectorVision {
         return result ?? image
     }
     
-    func postProcessNoNms(_ prediction: MLFeatureProvider, confidenceThreshold: Float = 0.25, classNames: [String]? = nil) -> [Detection]  {
+    func postProcessNoNmsFromArraysVision(confidenceMultiArray: MLMultiArray, coordinatesMultiArray: MLMultiArray,
+                          confidenceThreshold: Float = 0.25, classNames: [String]? = nil) -> [Detection]  {
         print("\n=== Model Predictions NO NMS ===")
         var detections: [Detection] = []
         
-        if let confidenceMultiArray = prediction.featureValue(for: "confidence")?.multiArrayValue,
-           let coordinatesMultiArray = prediction.featureValue(for: "coordinates")? .multiArrayValue{
-            let shape = confidenceMultiArray.shape.map { $0.intValue }
-            let coordShape = coordinatesMultiArray.shape.map{$0.intValue}
-            //print("Confidence shape: \(shape)")
-            //print("Coordinates shape: \(coordShape)")
-            if shape.count == 1 {
+        let shape = confidenceMultiArray.shape.map { $0.intValue }
+        let coordShape = coordinatesMultiArray.shape.map { $0.intValue }
+        
+        if shape.count == 1 {
                 let numClasses = shape[0]
                 var maxConf = 0.0
                 var maxClass = 0
                 
-                for i in 0..<numClasses {
-                    let conf = confidenceMultiArray[i].doubleValue
-                    if conf > maxConf {
-                        maxConf = conf
-                        maxClass = i
-                    }
+            for i in 0..<numClasses {
+                let conf = confidenceMultiArray[i].doubleValue
+                if conf > maxConf {
+                    maxConf = conf
+                    maxClass = i
                 }
-                let className = classNames?[maxClass] ?? "Class \(maxClass)"
-                print("\nTop prediction: \(className) with confidence \(String(format: "%.4f", maxConf))")
+            }
+            let className = classNames?[maxClass] ?? "Class \(maxClass)"
+            print("\nTop prediction: \(className) with confidence \(String(format: "%.4f", maxConf))")
             }else if shape.count == 2 {
                 //print("ElseIf shape = 2")
                 let numDetections = shape[0]
@@ -1034,8 +1008,26 @@ class DetectorVision {
                     }
                 }
             }
-        }
+        
         return detections
+    }
+    
+    func mapToOriginal(detections: [Detection]) -> [Detection] {
+        // Reuses self.scale, self.xOffset, and self.yOffset automatically
+        return detections.map { det in
+            let oldBox = det.box
+            let newX = (oldBox.origin.x - self.xOffset) / self.scale
+            let newY = (oldBox.origin.y - self.yOffset) / self.scale
+            let newW = oldBox.width / self.scale
+            let newH = oldBox.height / self.scale
+            
+            return Detection(
+                box: CGRect(x: newX, y: newY, width: newW, height: newH),
+                confidence: det.confidence,
+                classIndex: det.classIndex,
+                className: det.className
+            )
+        }
     }
 }
 
